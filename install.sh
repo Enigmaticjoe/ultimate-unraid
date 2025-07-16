@@ -2,7 +2,7 @@
 # ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 # ┃ ULTIMATE‑UNRAID — ZERO‑TOUCH INSTALLER                       ┃
 # ┃ Author  : ChatGPT (for Joshua, a.k.a. “just‑let‑it‑rip”)      ┃
-# ┃ Version : 2025‑07‑12                                          ┃
+# ┃ Version : 2025‑07‑16                                          ┃
 # ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 # PURPOSE  ▸ Completely wipe stale cache data, rebuild shares, pull & run a
 #            production‑grade Docker stack (Plex + *Arr + VPN + Debrid +
@@ -10,39 +10,44 @@
 #            auto‑enrol in Tailscale, and ping you if manual action is needed.
 # TARGET   ▸ Unraid 6.12+  (array already started, Internet reachable)
 # USAGE    ▸ bash <(curl -fsSL https://raw.githubusercontent.com/YOURREPO/ultimate-unraid/main/install.sh)
-# NOTE     ▸ Fill in or tweak the tiny “CONFIG BLOCK” below or just drop a
-#            creds file at /boot/config/ultimate‑unraid/creds.env and rerun.
+# NOTE     ▸ Adjust the CONFIG BLOCK below **or** drop a creds file at
+#            /boot/config/ultimate‑unraid/creds.env with identical keys.
 set -Eeuo pipefail
 
 ###############################################################################
-## 🛠 CONFIG BLOCK — edit here or supply /boot/config/ultimate-unraid/creds.env
+## 🛠 CONFIG BLOCK — your personal tokens (loaded first, overrideable)       ##
 ###############################################################################
-PLEX_CLAIM=""                            # e.g. claim‑abcdefgh1234              
-REALDEBRID_API=""                        # from https://real‑debrid.com/apitoken
-PREMIUMIZE_API=""                        # from https://www.premiumize.me/account
-MULLVAD_WG_FILE=""                       # absolute path to wg0.conf (optional)
+# === Core credentials ===
+PLEX_CLAIM="claim-kbHS_zjcadEAm3HTSLzP"                 # from https://plex.tv/claim
+REALDEBRID_API="LENYLTD7CFDP4FKPZQ7U4DDKYX77ZDLO2B76INF2MIJY2VNJWKLA"
+PREMIUMIZE_API="bpwjapf7wxfbjbup"
+
+# === VPN ===
+# Generate WireGuard config on Mullvad’s site or via `mullvad tunnel wireguard`
+# and place it at the path below.
+MULLVAD_WG_FILE="/boot/config/ultimate-unraid/wg0.conf"
 TAILSCALE_AUTHKEY="tskey-auth-k6ksDVRBQ911CNTRL-b7rLJdmwK16cBcrc2SQzz5jjbJ83MUwa"
-# --- SMS / Push -------------------------------------------------------------
-NTFY_TOPIC="unraid‑status"               # leave blank to disable ntfy push
-SMS_TO="+19374431244"                    # your cell — only used if ntfy not set
+
+# === Notifications ===
+NTFY_TOPIC="unraid-status"            # ntfy.sh topic for push alerts
+SMS_TO="+19374431244"                 # fallback SMS (uses textbelt)
 ###############################################################################
 
 # ░░░░░ 1.  LOAD EXTERNAL CREDS IF PRESENT ░░░░░
-CREDS_FILE="/boot/config/ultimate‑unraid/creds.env"
+CREDS_FILE="/boot/config/ultimate-unraid/creds.env"
 if [[ -f "$CREDS_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CREDS_FILE"
 fi
 
-# Helper — push or SMS fallback (ntfy first, curl‑sms second, else echo)
+# Helper — push (ntfy) or SMS fallback
 announce() {
   local MSG="$1"
   if [[ -n "$NTFY_TOPIC" ]]; then
     curl -fsSL -d "$MSG" "https://ntfy.sh/$NTFY_TOPIC" || true
   elif [[ -n "$SMS_TO" ]]; then
     curl -fsSL -G --data-urlencode "Body=$MSG" \
-      --data-urlencode "From=$SMS_TO" \
-      --data-urlencode "To=$SMS_TO" \
+      --data-urlencode "From=$SMS_TO" --data-urlencode "To=$SMS_TO" \
       "https://textbelt.com/text" || true
   else
     echo "[NOTICE] $MSG"
@@ -87,7 +92,7 @@ EOF
 
 # Appdata skeleton
 APPPATH="/mnt/cache/appdata"
-mkdir -p "$APPPATH"/{plex,qbittorrentvpn,sonarr,radarr,prowlarr,stash,filerun,homeassistant,homepage,ntfy}
+mkdir -p "$APPPATH"/{plex,qbittorrentvpn,sonarr,radarr,prowlarr,stash,filerun,homeassistant,homepage,ntfy,tailscale,rdtclient}
 chown -R nobody:users "$APPPATH"
 chmod -R 775 "$APPPATH"
 
@@ -100,26 +105,26 @@ install_plg "https://raw.githubusercontent.com/bergware/dynamix/master/unRAIDv6/
 
 # ░░░░░ 5.  DOCKER COMPOSE STACK ░░░░░
 STACK=/mnt/cache/appdata/stack
-test -d "$STACK" || mkdir -p "$STACK"
+mkdir -p "$STACK"
 cat > "$STACK/docker-compose.yml" <<YML
 version: '3.9'
 services:
   plex:
     image: linuxserver/plex
     container_name: plex
+    network_mode: bridge
     environment:
       - PUID=99
       - PGID=100
       - VERSION=docker
-      - PLEX_CLAIM=$PLEX_CLAIM
+      - PLEX_CLAIM=${PLEX_CLAIM}
       - TZ=America/New_York
-    network_mode: bridge
     volumes:
-      - $APPPATH/plex:/config
+      - ${APPPATH}/plex:/config
       - /mnt/user/media:/media
       - /tmp:/transcode
     ports:
-      - 32400:32400
+      - "32400:32400"
     restart: unless-stopped
 
   qbittorrentvpn:
@@ -136,12 +141,12 @@ services:
       - NAME_SERVERS=1.1.1.1,9.9.9.9
       - TZ=America/New_York
     volumes:
-      - $APPPATH/qbittorrentvpn:/config
+      - ${APPPATH}/qbittorrentvpn:/config
       - /mnt/user/downloads:/downloads
-    ports: [8080:8080]
+    ports:
+      - "8080:8080"
     restart: unless-stopped
-    # auto‑mount Mullvad WG if provided
-    {{- if "$MULLVAD_WG_FILE" }}
+    {{- if "${MULLVAD_WG_FILE}" }}
     secrets:
       - mullvad_wg
     {{- end }}
@@ -151,10 +156,10 @@ services:
     container_name: sonarr
     environment: [PUID=99, PGID=100, TZ=America/New_York]
     volumes:
-      - $APPPATH/sonarr:/config
+      - ${APPPATH}/sonarr:/config
       - /mnt/user/media:/media
       - /mnt/user/downloads:/downloads
-    ports: [8989:8989]
+    ports: ["8989:8989"]
     restart: unless-stopped
 
   radarr:
@@ -162,10 +167,10 @@ services:
     container_name: radarr
     environment: [PUID=99, PGID=100, TZ=America/New_York]
     volumes:
-      - $APPPATH/radarr:/config
+      - ${APPPATH}/radarr:/config
       - /mnt/user/media:/media
       - /mnt/user/downloads:/downloads
-    ports: [7878:7878]
+    ports: ["7878:7878"]
     restart: unless-stopped
 
   prowlarr:
@@ -173,8 +178,8 @@ services:
     container_name: prowlarr
     environment: [PUID=99, PGID=100, TZ=America/New_York]
     volumes:
-      - $APPPATH/prowlarr:/config
-    ports: [9696:9696]
+      - ${APPPATH}/prowlarr:/config
+    ports: ["9696:9696"]
     restart: unless-stopped
 
   rdtclient:
@@ -184,13 +189,12 @@ services:
       - PUID=99
       - PGID=100
       - TZ=America/New_York
-      - RDT_RESTRAIN=true
-      - RDT_AUTH=$REALDEBRID_API
-      - PM_AUTH=$PREMIUMIZE_API
+      - RDT_AUTH=${REALDEBRID_API}
+      - PM_AUTH=${PREMIUMIZE_API}
     volumes:
-      - $APPPATH/rdtclient:/config
+      - ${APPPATH}/rdtclient:/config
       - /mnt/user/downloads:/downloads
-    ports: [6500:6500]
+    ports: ["6500:6500"]
     restart: unless-stopped
 
   filerun:
@@ -198,79 +202,11 @@ services:
     container_name: filerun
     environment: [PUID=99, PGID=100, TZ=America/New_York]
     volumes:
-      - $APPPATH/filerun:/config
+      - ${APPPATH}/filerun:/config
       - /mnt/user/cloudsync:/data
-    ports: [8080:80]
+    ports: ["8080:80"]
     restart: unless-stopped
 
   stash:
     image: stashapp/stash:latest
-    container_name: stash
-    environment: [PUID=99, PGID=100, TZ=America/New_York]
-    volumes:
-      - $APPPATH/stash:/root/.stash
-      - /mnt/user/adult:/media
-    ports: [9999:9999]
-    restart: unless-stopped
-
-  homepage:
-    image: ghcr.io/benphelps/homepage:latest
-    container_name: homepage
-    environment: [PUID=99, PGID=100, TZ=America/New_York]
-    ports: [3000:3000]
-    volumes:
-      - $APPPATH/homepage:/app/config
-    restart: unless-stopped
-
-  ntfy:
-    image: binwiederhier/ntfy
-    container_name: ntfy
-    ports: [8081:80]
-    volumes: [$APPPATH/ntfy:/var/cache/ntfy]
-    restart: unless-stopped
-
-  homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:stable
-    container_name: homeassistant
-    privileged: true
-    network_mode: host
-    environment: [TZ=America/New_York]
-    volumes: [$APPPATH/homeassistant:/config]
-    restart: unless-stopped
-
-  tailscale:
-    image: tailscale/tailscale
-    container_name: tailscale
-    network_mode: host
-    privileged: true
-    volumes: [$APPPATH/tailscale:/var/lib/tailscale]
-    command: tailscaled --state=/var/lib/tailscale/tailscaled.state
-    environment:
-      - TS_AUTHKEY=$TAILSCALE_AUTHKEY
-    restart: unless-stopped
-
-secrets:
-  mullvad_wg:
-    file: $MULLVAD_WG_FILE
-YML
-
-cd "$STACK"
-/usr/local/bin/docker compose pull && /usr/local/bin/docker compose up -d
-
-# ░░░░░ 6.  DONE ░░░░░
-announce "✅ Ultimate‑Unraid install finished — dashboard @ http://tower:3000"
-cat <<'EOF'
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃   INSTALL COMPLETE — YOUR SERVICES:          ┃
-┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
-┃ Plex:            http://tower:32400          ┃
-┃ Dashboard:       http://tower:3000          ┃
-┃ Sonarr:          http://tower:8989          ┃
-┃ Radarr:          http://tower:7878          ┃
-┃ Prowlarr:        http://tower:9696          ┃
-┃ qBittorrent:     http://tower:8080          ┃
-┃ Stash:           http://tower:9999          ┃
-┃ 13ftladder:      http://tower:1337          ┃
-┃ Home Assistant:  http://tower:8123          ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-EOF
+    container
